@@ -209,3 +209,110 @@ node ~/workspace/dsh-session-check/bin/dsh-projcache.mjs apply \
   --store "$PWD/storages" --sessions "$PWD/sessions"
 bash run.sh cold cold-after-tool              # prove the harness still agrees
 ```
+
+---
+
+# v0 refusal gates (#6614)
+
+Verified against the official validator on a real corpus and on two fixtures
+built from real logs. Nothing below is a hand-written expectation of what the
+migration does: the refusals quoted are produced by
+`assertReleasedEventPayload` itself.
+
+## The corpus, and a bug my first cross-check had
+
+Corpus: 41 stored logs under `~/workspace/dsh-lab/corpus` (a lab copy).
+`node ~/workspace/dsh-lab/v0/crosscheck-v0.mjs ~/workspace/dsh-lab/corpus`:
+
+```
+logs (all generations)      : 41
+logs at format v0           : 32   (skipped 9 at a later generation)
+official validator refuses  : 20
+dsh-session-check refuses   : 20
+disagreements               : 0
+```
+
+**The first run of that script reported 26 refusals and 6 disagreements, and
+both numbers were wrong.** Two defects, both mine:
+
+1. It ran the *v0* validator over 9 logs at later generations. Those logs
+   legitimately contain event types and payload members introduced after v0
+   (`system/message`, `request/context.systemPromptUpdate`,
+   `assistant/message.stream`), and the v0 validator refuses all of them. Not a
+   migration refusal at all. Restricted to `header.version === 0`: 26 -> 20.
+2. It compared the two verdicts keyed by the log header's `id`. A log whose
+   header has no `id` produced `undefined` on one side, which is neither blocked
+   nor clean, and was printed as a disagreement. Keyed by path: 6 -> 0.
+
+The same defect existed in the shipped scanner, and it was worse there: `findLogs`
+matched only the v0-era file name `session.jsonl.zstd`, so **9 of 41 logs were
+never scanned at all** while the version tally still looked complete. Fixed --
+`isLogFile` now accepts `session.jsonl.zstd`, `session.v3.jsonl.zstd`, and
+`session.v3.jsonl`. After the fix: `sessions scanned : 41`, `format versions :
+{"0":32,"3":9}`, `loader would refuse: 20` (unchanged, so the 9 extra logs
+produced no new refusal), and the official v0 gates ran on exactly the 32 v0
+logs.
+
+## The two failure shapes, built from real logs
+
+Hand-built events would risk failing the validator for the wrong reason (a
+missing required member, a bad semantic type). Instead
+`~/workspace/dsh-lab/v0/build-v0-fixtures.mjs` starts from a log the validator
+accepts -- 12 of the 32 v0 logs are clean -- and changes exactly one thing.
+
+| fixture | change | official validator says |
+|---|---|---|
+| `v0-unknown-event-type` | appends `notice/banner` with `ignorable: true` | `format v0 contains unknown historical event type "notice/banner" at seq 4; migration refuses unknown historical events even when ignorable` |
+| `v0-unknown-payload-member` | adds `origin` to a real `permission/preset` event's `data` | `permission/preset 0 data has unexpected member "origin"` |
+| `v0-control-clean` | nothing | no refusals |
+
+This independently confirms both causes in #6614, including the part the
+reporter called out: **the v0 edge refuses an unknown event type even when the
+event declares `ignorable: true`.**
+
+`dsh-session-check scan ~/workspace/dsh-lab/v0/fixtures`:
+
+```
+sessions scanned   : 3
+loader would refuse: 2
+official validator : @deepseek-ai/dsh-session-format-v0-to-v1 loaded; ran over 3 format-v0 log(s)
+v0 inventory       : 51 types, frozen=true, list-matches-dispositions=true
+
+gates hit, by session count:
+    1  v0-unknown-event-type  (official validator)
+    1  v0-unknown-payload-member  (official validator)
+```
+
+The control log is reported `ok`, each real failure is reported once, and the
+descriptor-version refusal is *not* double counted (pinned by the test `a
+descriptor refusal is attributed to the existing gate and not counted twice`).
+
+## The "never hand-patch the frozen v0 inventory" guardrail
+
+The reporter measured that patching the frozen v0 inventory makes logs readable
+but then appends return success while nothing lands on disk and no v3 is
+derived. **I did not reproduce that end-to-end experiment**, so it is quoted as
+theirs. What I did verify is the mechanism that makes it credible, in the
+shipped code:
+
+- `dsh-session/lib/index.js:270` -- an event whose type is not in
+  `KNOWN_SESSION_EVENT_TYPES` is retained only when it carries
+  `ignorable: true`; otherwise the later generation refuses the log it was
+  derived into. So accepting an unknown type at the v0 edge does not remove the
+  refusal, it moves the refusal to the write path, where it is silent.
+- The migration's own policy note: `SessionEventMap` members are required on
+  read, so a build that does not know a type refuses the log.
+
+The tool prints the inventory's shape and warns when it is not frozen or its
+derived list no longer matches its dispositions. The check is order-insensitive
+on purpose: the release happens to sort its list, and a warning that fires on a
+future sort change would be worse than no warning.
+
+## Not verified
+
+- The reporter's 243-session / 128-affected measurement. My corpus is a
+  different population and contains neither failure shape; the shapes above were
+  constructed.
+- Their sandbox write-back experiment (quoted as theirs).
+- Whether a supported recovery path for already-written v0 logs exists; that is
+  an upstream design question, not a scanner question.

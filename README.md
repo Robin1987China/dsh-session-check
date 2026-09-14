@@ -38,6 +38,8 @@ It reads every `session.jsonl.zstd` under a sessions directory, parses it, and r
 npx dsh-session-check scan ~/.dsh/sessions
 ```
 
+`scan` finds every stored log name, not just the v0-era `session.jsonl.zstd`. It previously matched only that one name and silently omitted `session.v3.jsonl.zstd` -- 9 of 41 logs in the corpus this was checked against -- while the version tally still looked complete. A log the scan cannot see is a log it cannot warn about.
+
 Example output:
 
 ```text
@@ -130,6 +132,30 @@ Each gate mirrors one validator in the migration chain, read from the installed 
 | `retired-source-kind` | a message source kind no longer in the accepted set | `dsh-session-format-v2-to-v3/lib/index.js:123` |
 | `stale-descriptor` | a `subagent/descriptor` whose version is not 3 | `dsh-session-format-v0-to-v1/lib/index.js:1586` |
 | `incomplete-inserted` | an inserted inbox message missing id/role/content/source | `dsh-session-format-v0-to-v1/lib/index.js:283 and :715` |
+| `v0-unknown-event-type` | an event type outside the frozen v0 inventory, which the v0→v1 migration refuses **even when the event carries `ignorable: true`** | **calls** `assertReleasedEventPayload` from `dsh-session-format-v0-to-v1` |
+| `v0-unknown-payload-member` | a `data` member the type's v0 disposition does not declare (e.g. `permission/preset` + `origin`) | **calls** `assertReleasedEventPayload` from `dsh-session-format-v0-to-v1` |
+
+## Two of these gates are not mirrors
+
+The first three gates re-implement one decision each and cite the `file:line` they were read from, because the scan must work where the harness is not installed. The two `v0-*` gates do not re-implement anything: they **call** the official `assertReleasedEventPayload(event, 0)`, which is the function the v0→v1 migration itself runs over every event, and report its refusals by class.
+
+That matters because the alternative -- copying the frozen v0 inventory (51 event types in 0.1.5-rc.1) into this package -- goes stale, and a stale copy produces false positives, which is the one failure this tool must never have.
+
+Consequences you should know about:
+
+- **`scan` says so when it cannot run them.** If `@deepseek-ai/dsh-session-format-v0-to-v1` is not installed, or `--no-validator` is passed, the output says `official validator : UNAVAILABLE -- <reason>` instead of printing a clean-looking result.
+- **They only run over format-v0 logs.** A later generation is not going through the v0→v1 migration, and running the v0 validator over it reports the event types and payload members that generation added -- none of which is a refusal.
+- **A `subagent/descriptor` refusal is attributed to `stale-descriptor` and dropped here.** The validator refuses that too; counting it in both places would double every tally.
+- **`scan` reports the inventory it used**, and warns if that inventory is not frozen or its derived type list no longer matches its dispositions.
+
+### Never hand-patch the frozen v0 inventory
+
+If a log is refused because it contains an event type your build does not know, the tempting fix is to edit the inventory in the installed package so the log opens. **Do not.** A hand-patched inventory makes the log *readable* and turns the failure into a worse one:
+
+- `dsh-session/lib/index.js:270` retains an unknown event type only when the event carries `ignorable: true`, and otherwise the later generation refuses the log it was derived into. So accepting an unknown type at the v0 edge moves the refusal to the write path, where it is silent instead of loud.
+- A first-hand report on #6614 measured exactly that: after patching the frozen v0 inventory in a sandbox, appends returned success while nothing landed on disk and no v3 was derived. A clear refusal is strictly safer than a half-fixed state.
+
+`scan` prints the inventory's shape (`51 types, frozen=true, list-matches-dispositions=true`) and warns when it has been modified, so you can tell. The documented upstream surface for this is the `ignorable` writer option proposed in upstream #1538; reinstall the package rather than editing it.
 
 ## Why the gates are narrower than they look
 

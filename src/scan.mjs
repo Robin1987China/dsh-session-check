@@ -12,9 +12,26 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { GATES } from './gates.mjs'
+import { validateEvents } from './released.mjs'
 
-/** File name of one stored session log. */
+/** File name of one stored session log, as written by the v0-era releases. */
 export const LOG_FILE = 'session.jsonl.zstd'
+
+/**
+ * Whether a file name is a stored session log.
+ *
+ * A stored log's name carries an optional format infix and an optional
+ * compression suffix: `session.jsonl.zstd` (the v0-era name), and
+ * `session.v3.jsonl.zstd` / `session.v3.jsonl` from later releases. Matching
+ * only {@link LOG_FILE} silently omitted every later-generation log — 9 of 41 in
+ * the corpus this was checked against — while the version tally still looked
+ * complete. A log this scan cannot see is a log it cannot warn about.
+ * @param name - the file name.
+ * @returns whether it is a stored session log.
+ */
+export function isLogFile(name) {
+  return /^session(\.[A-Za-z0-9-]+)?\.jsonl(\.zstd)?$/u.test(name)
+}
 
 /**
  * Find every stored session log under a root.
@@ -31,7 +48,7 @@ export function findLogs(root) {
       let st
       try { st = statSync(full) } catch { continue }
       if (st.isDirectory()) walk(full)
-      else if (name === LOG_FILE) found.push(full)
+      else if (isLogFile(name)) found.push(full)
     }
   }
   walk(root)
@@ -78,9 +95,15 @@ export function parseLog(text) {
 /**
  * Run every gate over one log.
  * @param path - the stored log.
+ * @param options - optional `released` official-validator module. When it is
+ *   supplied, a format-v0 log additionally runs the official payload validator
+ *   and its refusals are reported under `v0-unknown-event-type` and
+ *   `v0-unknown-payload-member`. A later generation skips that step: the v0
+ *   validator would report the event types and payload members that generation
+ *   added, which are not migration refusals at all.
  * @returns a verdict for that session.
  */
-export function scanLog(path) {
+export function scanLog(path, options = {}) {
   const { events, unparsable, packed, header } = parseLog(readLog(path))
   const findings = []
   for (const gate of GATES) {
@@ -96,15 +119,22 @@ export function scanLog(path) {
     }
     if (hits > 0) findings.push({ id: gate.id, label: gate.label, events: hits, samples })
   }
+  const formatVersion = header && header.version !== undefined ? header.version : null
+  let officialRan = false
+  if (options.released !== undefined && formatVersion === 0) {
+    officialRan = true
+    findings.push(...validateEvents(options.released, events))
+  }
   return {
     path,
     id: header && header.id ? header.id : '',
-    formatVersion: header && header.version !== undefined ? header.version : null,
+    formatVersion,
     preset: header && header.agentPreset ? header.agentPreset : '',
     events: events.length,
     packedRuns: packed,
     unparsable,
     findings,
+    officialRan,
     blocked: findings.length > 0,
   }
 }
@@ -113,13 +143,14 @@ export function scanLog(path) {
  * Scan a whole sessions root.
  * @param root - sessions directory.
  * @param onProgress - optional per-session callback.
+ * @param options - optional `released` official-validator module, passed to {@link scanLog}.
  * @returns one verdict per log, in path order.
  */
-export function scanRoot(root, onProgress) {
+export function scanRoot(root, onProgress, options = {}) {
   const logs = findLogs(root)
   const verdicts = []
   for (const path of logs) {
-    const verdict = scanLog(path)
+    const verdict = scanLog(path, options)
     verdicts.push(verdict)
     if (onProgress) onProgress(verdict, verdicts.length, logs.length)
   }

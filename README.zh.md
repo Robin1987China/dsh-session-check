@@ -38,6 +38,8 @@
 npx dsh-session-check scan ~/.dsh/sessions
 ```
 
+`scan` 会找出所有已存储的日志名，不只是 v0 时代的 `session.jsonl.zstd`。它以前只匹配那一个名字，于是**静默漏掉** `session.v3.jsonl.zstd`——在核对用的语料里 41 份中有 9 份——而版本统计看起来仍然是完整的。扫描看不见的日志，就是它无法警告的日志。
+
 输出示例：
 
 ```text
@@ -130,6 +132,30 @@ npx -y -p dsh-session-check dsh-projcache survey  (then `apply`)
 | `retired-source-kind` | 消息来源的 kind 已不在接受集合里 | `dsh-session-format-v2-to-v3/lib/index.js:123` |
 | `stale-descriptor` | `subagent/descriptor` 的 version 不是 3 | `dsh-session-format-v0-to-v1/lib/index.js:1586` |
 | `incomplete-inserted` | 插入的收件箱消息缺 id/role/content/source | `dsh-session-format-v0-to-v1/lib/index.js:283 与 :715` |
+| `v0-unknown-event-type` | 事件类型不在冻结的 v0 清单里——v0→v1 迁移**即使该事件带 `ignorable: true` 也照样拒绝** | **直接调用** `dsh-session-format-v0-to-v1` 的 `assertReleasedEventPayload` |
+| `v0-unknown-payload-member` | `data` 里有该类型的 v0 disposition 未声明的成员（例如 `permission/preset` + `origin`） | **直接调用** `dsh-session-format-v0-to-v1` 的 `assertReleasedEventPayload` |
+
+## 其中两道闸门不是「镜像」
+
+前三道闸门各自重新实现一条判定，并标注它读自哪个 `file:line`，因为扫描必须在没装 harness 的机器上也能跑。两道 `v0-*` 闸门不重新实现任何东西：它们**直接调用**官方的 `assertReleasedEventPayload(event, 0)`——也就是 v0→v1 迁移自己对每个事件跑的那个函数——并按类别报告它的拒绝。
+
+这一点很重要：另一种做法是把冻结的 v0 清单（0.1.5-rc.1 里 51 个事件类型）抄进这个包，而抄本会过期，过期的抄本会产生**假阳性**——这恰恰是这个工具最不能犯的错。
+
+你需要知道的后果：
+
+- **跑不了时它会明说。** 没装 `@deepseek-ai/dsh-session-format-v0-to-v1`，或用了 `--no-validator`，输出会是 `official validator : UNAVAILABLE -- <原因>`，而不是一份看起来干净的结论。
+- **只对 format v0 日志运行。** 更高版本不经过 v0→v1 迁移；拿 v0 校验器去跑它，报出来的是那个版本新增的事件类型和 payload 成员，全都不是拒绝原因。
+- **`subagent/descriptor` 的拒绝归到 `stale-descriptor` 并从这两道闸门里剔除。** 校验器也会拒它；两边都算会让每个计数翻倍。
+- **`scan` 会报告它用的是哪份清单**，并且当清单没有被冻结、或派生出的类型列表与 disposition 不再一致时给出警告。
+
+### 绝不要手工修补冻结的 v0 清单
+
+如果一条日志因为含你的构建不认识的事件类型而被拒，最诱人的做法是改掉已安装包里的清单好让日志打开。**不要这么做。** 手工修补过的清单会让日志**变得可读**，同时把失败换成一个更糟的：
+
+- `dsh-session/lib/index.js:270` 只在事件带 `ignorable: true` 时才保留未知类型；否则它派生出的更高版本会拒绝该日志。所以在 v0 边界上放行一个未知类型，只是把拒绝挪到了**写入路径**——在那里它是静默的，而不是响亮的。
+- #6614 的一手报告测到的正是这个：在沙箱里修补冻结的 v0 清单之后，append 返回成功，但**磁盘上什么都没落**、也没有派生 v3。清晰的拒绝严格优于半修好的状态。
+
+`scan` 会打印清单的形态（`51 types, frozen=true, list-matches-dispositions=true`），被改过就会警告。上游为这件事提出的正式入口是 #1538 里的 `ignorable` 写入面；请重装这个包，而不是去改它。
 
 ## 为什么闸门比看起来更窄
 

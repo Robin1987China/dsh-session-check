@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-check",
-  "version": "0.1.2",
-  "description": "Read-only diagnosis of stored DeepSeek Harness sessions (which a format migration will refuse, and which gate), offline maintenance for the projection cache, and a read-only cache-footprint diagnostic plugin.",
+  "version": "0.1.3",
+  "description": "Read-only diagnosis of stored DeepSeek Harness sessions (migration gates, including two that call the official v0 validator), offline projection-cache maintenance, and a read-only cache-footprint diagnostic plugin.",
   "type": "module",
   "main": "src/scan.mjs",
   "exports": {
@@ -9,7 +9,8 @@
     "./gates": "./src/gates.mjs",
     "./projcache": "./src/projcache.mjs",
     "./diag": "./src/diag.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./released": "./src/released.mjs"
   },
   "bin": {
     "dsh-session-check": "./bin/dsh-session-check.mjs",
