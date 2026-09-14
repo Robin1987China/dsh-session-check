@@ -1,0 +1,43 @@
+{
+  "name": "dsh-session-check",
+  "version": "0.1.0",
+  "description": "Read-only diagnosis: which stored DeepSeek Harness sessions a format migration will refuse, and which gate refuses them.",
+  "type": "module",
+  "main": "src/scan.mjs",
+  "exports": {
+    ".": "./src/scan.mjs",
+    "./gates": "./src/gates.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-session-check": "./bin/dsh-session-check.mjs"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "test/",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "session",
+    "diagnostics",
+    "migration"
+  ],
+  "license": "MIT",
+  "author": "Robin1987China",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Robin1987China/dsh-session-check.git"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
