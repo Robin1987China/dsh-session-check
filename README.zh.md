@@ -2,9 +2,17 @@
 
 [English](README.md) | 中文
 
-**只读**诊断工具：告诉你哪些已存储的 DeepSeek Harness 会话会被格式迁移拒绝，以及**被哪一道闸门拒绝**。
+**只读**诊断工具：告诉你哪些已存储的 DeepSeek Harness 会话会被格式迁移拒绝，以及**被哪一道闸门拒绝**。另带第二个命令 `dsh-projcache`，用于回收会话投影缓存占用的空间。
 
 作者 [@Robin1987China](https://github.com/Robin1987China)
+
+两个命令，两个承诺：
+
+| 命令 | 承诺 |
+|---|---|
+| `dsh-session-check scan` | **只读**：哪些会话会被格式迁移拒绝，各自卡在哪道闸门 |
+| `dsh-projcache survey` | **只读**：投影缓存里存了什么，有多少可回收 |
+| `dsh-projcache apply` | 写入——所有护栏通过后才写，且逐文件留备份 |
 
 ## 本工具诊断的症状
 
@@ -41,6 +49,49 @@ format versions    : {"0":32}
 gates hit, by session count:
    20  stale-descriptor
 ```
+
+## 投影缓存（`dsh-projcache`）
+
+上面的 `scan` 看的是会话日志；`dsh-projcache` 看的是另一半持久化数据：`<DSH_HOME>/storages/session_projcache/sessions/`，每个会话一个格式化过的 JSON 文档。
+
+**它对应的症状：** harness 进程用久了内存越来越大 · 会话删了但 `storages/` 还在涨 · 某条会话首条消息巨大，于是每次启动都要为它付费
+
+```sh
+dsh-projcache survey    # 只报告，不写任何文件
+dsh-projcache apply     # 回收确定无主的记录 + 裁剪超长行
+```
+
+它只做两件事：
+
+1. **回收日志已消失的记录。** 记录只能通过「由存活或已存储的会话 header 构造出的身份」被读到；日志一旦没了，任何调用方都再也构造不出那个身份——这条记录只是占着字节，并且每次启动都被解析一遍。只有当日志在你传入的 sessions 根目录里**确定不存在**时才删除，且先写备份。
+2. **裁剪超长的 `titleInput` 前缀。** 这一行把会话首条合格用户消息**整条**存了下来，而它唯一的读者只要 5 个词 / 40 字节（你装配里的 `fallbackMaxWords` / `fallbackMaxBytes`）。工具把文本替换成一个 UTF-8 安全的前缀（默认 4096 字节）——永远保留前缀而不是后缀，且不切断码点。
+
+### 它不做什么
+
+- **不加 `apply` 就绝不写入。** `survey` 逐字节只读，测试套件对此有断言。
+- **无法逐字节复现的文档，它拒绝写。** 存储格式是 `JSON.stringify({version, record}, null, 2) + '\n'`；只要某个记录不能这样往返一致，就说明工具对后端格式的模型已经过期，直接停手。这也是为什么非 JSON 后端会被拒绝而不是被猜着改。
+- **sessions 根不存在、或里面一条日志都没有时，它拒绝写入。** `--force` 也**覆盖不了**这一条，所以写错路径不可能删掉你的整个存储。
+- **裁剪会改变 fallback 标题时，它跳过该记录。** 工具会用原文本和裁剪后文本各算一次 fallback 标题，不等就跳过。
+- **它不是永久修复。** 任何一次从日志的完整重放——记录被删、domain 版本号抬升、`titleInput` 的 `stateVersion` 变化——都会把那一行按原尺寸重建。再跑一次 `apply` 即可，或用开机体检留意。真正的修复必须在采集处裁剪，那属于上游。
+
+请**在 harness 停止时**运行：进程运行期间，这个存储是内存里的一张活表。
+
+### 参数
+
+| 参数 | 默认 | 含义 |
+|---|---|---|
+| `--store DIR` | `$DSH_HOME/storages` | 存储后端根目录 |
+| `--sessions DIR` | `$DSH_HOME/sessions` | 用来判定「无主」的 sessions 根目录 |
+| `--clamp-bytes N` | `4096` | 存储的 `titleInput` 前缀预算 |
+| `--fallback-words N` | `5` | 你装配里的 `fallbackMaxWords`，用于不变量校验 |
+| `--fallback-bytes N` | `40` | 你装配里的 `fallbackMaxBytes`，用于不变量校验 |
+| `--max-orphan-fraction F` | `0.5` | 无主记录占比超过此值则拒绝回收 |
+| `--force` | 关 | **仅**覆盖占比护栏 |
+| `--json` | 关 | 机器可读输出 |
+
+每个被改动的文件旁边都会留下 `<id>.json.bak.<stamp>`。loader 只读 `*.json`，所以备份不会被加载，直到你自己删掉。
+
+以上全部证据——裁剪能扛过 harness 自己的回写、回收、记录缺失的最坏情况、以及护栏矩阵——都在 [`docs/verification.md`](docs/verification.md)，含原始 JSON 报告。
 
 ## 三道闸门
 

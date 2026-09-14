@@ -2,9 +2,17 @@
 
 English | [中文](README.zh.md)
 
-**Read-only** diagnosis for stored DeepSeek Harness sessions: which ones the format migration will refuse, and which gate refuses each one.
+**Read-only** diagnosis for stored DeepSeek Harness sessions: which ones the format migration will refuse, and which gate refuses each one. Ships a second binary, `dsh-projcache`, that reclaims space in the session projection cache.
 
 Maintained by [@Robin1987China](https://github.com/Robin1987China)
+
+Two commands, two promises:
+
+| command | promise |
+|---|---|
+| `dsh-session-check scan` | **reads only.** Which sessions a format migration will refuse, and the gate that refuses each one. |
+| `dsh-projcache survey` | **reads only.** What the session projection cache is storing, and what could be reclaimed. |
+| `dsh-projcache apply` | writes, after every guard passes, with a per-file backup. |
 
 ## Symptoms this diagnoses
 
@@ -41,6 +49,49 @@ format versions    : {"0":32}
 gates hit, by session count:
    20  stale-descriptor
 ```
+
+## The projection cache (`dsh-projcache`)
+
+`scan` above looks at session logs. `dsh-projcache` looks at the other durable session store: `<DSH_HOME>/storages/session_projcache/sessions/`, one pretty-printed JSON document per session.
+
+**Symptoms this addresses:** the harness process grows over time · `storages/` keeps growing although sessions were deleted · a session's first message was enormous and now every boot pays for it
+
+```sh
+dsh-projcache survey    # report only; writes nothing
+dsh-projcache apply     # reap provable orphans and clamp oversized rows
+```
+
+It does exactly two things:
+
+1. **Reaps records whose session log is gone.** A record is reachable only through an identity match built from a live or stored session header, so once the log is gone no caller can ever read it — it just occupies bytes and is parsed at every boot. The record is deleted only when the log is provably absent from the sessions root you pass, and only after a backup is written next to it.
+2. **Clamps an oversized `titleInput` prefix.** That row stores the session's first eligible user message *whole*, while its only reader wants 5 words / 40 bytes (`fallbackMaxWords` / `fallbackMaxBytes` in your composition). The stored text is replaced with a UTF-8-safe prefix (default 4096 bytes) — never a suffix, never splitting a code point.
+
+### What it will not do
+
+- **It never writes unless you run `apply`.** `survey` is byte-for-byte read-only, and the test suite pins that.
+- **It refuses to write a document it cannot reproduce byte-for-byte.** The store format is `JSON.stringify({version, record}, null, 2) + '\n'`; if a record does not round-trip through that, the tool's model of the backend is stale and it stops. This is also why a non-JSON backend is refused rather than guessed at.
+- **It refuses a sessions root that does not exist or holds no log at all.** `--force` cannot override that, so a mistyped path cannot delete your store.
+- **It does not clamp a row when the clamp would change the derived fallback title.** It computes the fallback from the original and from the clamped text and skips the record unless they are equal.
+- **It is not a permanent fix.** A full replay from the log — a deleted record, a domain version bump, a `titleInput` `stateVersion` change — recreates the oversized row at full size. Re-run `apply`, or watch for it with the boot diagnostic. The permanent fix has to clamp at the capture site, which is upstream.
+
+Run it with the harness stopped: the store is an in-memory table while the process is running.
+
+### Options
+
+| flag | default | meaning |
+|---|---|---|
+| `--store DIR` | `$DSH_HOME/storages` | storage backend root |
+| `--sessions DIR` | `$DSH_HOME/sessions` | sessions root used to decide what is an orphan |
+| `--clamp-bytes N` | `4096` | prefix budget for a stored `titleInput` |
+| `--fallback-words N` | `5` | your composition's `fallbackMaxWords`, for the invariant check |
+| `--fallback-bytes N` | `40` | your composition's `fallbackMaxBytes`, for the invariant check |
+| `--max-orphan-fraction F` | `0.5` | refuse to reap above this share |
+| `--force` | off | override the orphan-share guard only |
+| `--json` | off | machine-readable output |
+
+Every changed file gets a `<id>.json.bak.<stamp>` sibling. The loader reads only `*.json`, so backups are ignored until you delete them.
+
+The evidence for all of this — the clamp surviving the harness's own write-back, the reap, the missing-record worst case, and the guard matrix — is in [`docs/verification.md`](docs/verification.md), with the raw JSON reports.
 
 ## The gates
 

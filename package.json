@@ -1,21 +1,24 @@
 {
   "name": "dsh-session-check",
-  "version": "0.1.0",
-  "description": "Read-only diagnosis: which stored DeepSeek Harness sessions a format migration will refuse, and which gate refuses them.",
+  "version": "0.1.1",
+  "description": "Read-only diagnosis of stored DeepSeek Harness sessions (which a format migration will refuse, and which gate), plus offline maintenance for the projection cache.",
   "type": "module",
   "main": "src/scan.mjs",
   "exports": {
     ".": "./src/scan.mjs",
     "./gates": "./src/gates.mjs",
+    "./projcache": "./src/projcache.mjs",
     "./package.json": "./package.json"
   },
   "bin": {
-    "dsh-session-check": "./bin/dsh-session-check.mjs"
+    "dsh-session-check": "./bin/dsh-session-check.mjs",
+    "dsh-projcache": "./bin/dsh-projcache.mjs"
   },
   "files": [
     "src/",
     "bin/",
     "test/",
+    "docs/",
     "README.md",
     "README.zh.md",
     "LICENSE"
@@ -29,7 +32,10 @@
     "deepseek-harness",
     "session",
     "diagnostics",
-    "migration"
+    "migration",
+    "projection-cache",
+    "storage",
+    "maintenance"
   ],
   "license": "MIT",
   "author": "Robin1987China",
