@@ -93,6 +93,34 @@ Every changed file gets a `<id>.json.bak.<stamp>` sibling. The loader reads only
 
 The evidence for all of this — the clamp surviving the harness's own write-back, the reap, the missing-record worst case, and the guard matrix — is in [`docs/verification.md`](docs/verification.md), with the raw JSON reports.
 
+## Boot diagnostic (`dsh-session-check/diag`)
+
+A read-only Cordis plugin that prints one line at start when the projection cache holds enough reclaimable bytes to matter (default threshold: 1 MiB):
+
+```text
+projection cache: 8.0 MB reclaimable — 2 of 2 records store a titleInput text (largest 8388608 chars,
+8.0 MB total), while the fallback title reads only the first 4096 bytes. Reclaim offline with:
+npx -y -p dsh-session-check dsh-projcache survey  (then `apply`)
+```
+
+Mount it as a bundle row:
+
+```yaml
+- insert:
+    - id: projcache-diag
+      name: 'dsh-session-check/diag'
+```
+
+The `dsh-community-fixes` bundle already mounts it, and it is the only reason this plugin exists in a CLI package: the report and the reclaim should share one implementation.
+
+It reads the live domain table with `KvTable.entries()` and never writes. It measures against a deadline (default 50 ms) and says `(partial scan: …)` rather than reporting a half-scan as a total.
+
+### Why it writes to stderr and not only to `ctx.logger`
+
+Because `ctx.logger` is not visible in the shipped composition. Cordis's built-in `LoggerService` installs exactly one exporter — an in-memory ring buffer (`@deepseek-ai/cordis`, `LoggerService` constructor) — and no shipped package registers a console sink. Measured on 0.1.5-rc.1: a `logger.warn` from this row produced no output on stdout or stderr in a `dsh web` run, while the same callback's `process.stderr.write` did. The logger call is kept so a deployment that does wire a sink still receives the message.
+
+This is worth knowing independently of this tool: **a plugin that reports a problem only through `ctx.logger` is reporting it to nobody** in a stock install.
+
 ## The gates
 
 Each gate mirrors one validator in the migration chain, read from the installed packages. The `file:line` is part of the output contract: re-read it before trusting the gate against a new release.

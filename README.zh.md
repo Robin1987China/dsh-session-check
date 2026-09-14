@@ -93,6 +93,34 @@ dsh-projcache apply     # 回收确定无主的记录 + 裁剪超长行
 
 以上全部证据——裁剪能扛过 harness 自己的回写、回收、记录缺失的最坏情况、以及护栏矩阵——都在 [`docs/verification.md`](docs/verification.md)，含原始 JSON 报告。
 
+## 开机体检（`dsh-session-check/diag`）
+
+一个只读的 Cordis 插件：当投影缓存里可回收的字节超过阈值（默认 1 MiB）时，在启动时打印一行。
+
+```text
+projection cache: 8.0 MB reclaimable — 2 of 2 records store a titleInput text (largest 8388608 chars,
+8.0 MB total), while the fallback title reads only the first 4096 bytes. Reclaim offline with:
+npx -y -p dsh-session-check dsh-projcache survey  (then `apply`)
+```
+
+挂载方式（bundle 行）：
+
+```yaml
+- insert:
+    - id: projcache-diag
+      name: 'dsh-session-check/diag'
+```
+
+`dsh-community-fixes` 这个 bundle 已经挂了它。它之所以放在这个 CLI 包里，是因为「报告」和「回收」应该共用一份实现。
+
+它只用 `KvTable.entries()` 读内存里的表，从不写入；测量有截止时间（默认 50 ms），超时会写 `(partial scan: …)`，而不是把半次扫描当成总数报出来。
+
+### 为什么它写 stderr，而不是只写 `ctx.logger`
+
+因为在出厂装配里 `ctx.logger` 根本看不见。Cordis 内置的 `LoggerService` 只装了一个 exporter——一个内存环形缓冲（`@deepseek-ai/cordis`，`LoggerService` 构造函数）——而没有任何已发布包注册 console sink。在 0.1.5-rc.1 上实测：这一行插件里的 `logger.warn` 在 `dsh web` 运行时 stdout / stderr 都没有任何输出，而同一次回调里的 `process.stderr.write` 有。这里仍然保留 logger 调用，是为了让真的接了 sink 的部署也能收到。
+
+这一点与本事无关地值得知道：**只通过 `ctx.logger` 报告问题的插件，在标准安装里等于没报告给任何人。**
+
 ## 三道闸门
 
 每道闸门对应迁移链里的一个校验器，都从**已安装的包**里读出来。输出里的 `file:line` 是契约的一部分：升级后请先重读它，再信任闸门。
